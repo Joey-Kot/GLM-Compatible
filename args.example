@@ -1,0 +1,14 @@
+--listen :8080
+--api-token sk-local-test
+--glm-api-key sk-your-glm-key
+--glm-base-url https://api.z.ai/api
+--glm-model glm-5.1
+--glm-models glm-5.1
+--glm-http-timeout 120
+--glm-max-idle-conns 200
+--glm-max-idle-conns-per-host 100
+--glm-max-conns-per-host 0
+--read-header-timeout 10
+--idle-timeout 120
+--verify-ssl=true
+--debug-log-body=false
