@@ -32,8 +32,16 @@ func main() {
 		MaxIdleConnsPerHost: cfg.GLMMaxIdleConnsPerHost,
 		MaxConnsPerHost:     cfg.GLMMaxConnsPerHost,
 	})
+	defer upstream.CloseIdleConnections()
 	upstream.DebugLogBody = cfg.DebugLogBody
-	handler := httpapi.New(cfg, upstream, state.New())
+	upstream.MaxResponseBodyBytes = cfg.GLMMaxResponseBodyBytes
+	handler := httpapi.New(cfg, upstream, state.NewWithLimits(state.Limits{
+		MaxResponses:       cfg.StoreMaxResponses,
+		MaxChatCompletions: cfg.StoreMaxChatCompletions,
+		MaxConversations:   cfg.StoreMaxConversations,
+		TTL:                cfg.StoreTTL,
+		PruneInterval:      cfg.StorePruneInterval,
+	}))
 	server := newHTTPServer(cfg, handler)
 	log.Printf("listening on %s", cfg.Listen)
 	if err := server.ListenAndServe(); err != nil {

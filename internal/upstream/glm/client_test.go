@@ -130,6 +130,19 @@ func TestChatRejectsNonJSONSuccess(t *testing.T) {
 	}
 }
 
+func TestChatRejectsOversizedResponseBody(t *testing.T) {
+	client := New("https://glm.test/api", "sk-upstream", time.Second, true)
+	client.MaxResponseBodyBytes = 8
+	client.HTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return textResponse(http.StatusOK, strings.Repeat("x", 9)), nil
+	})}
+	_, err := client.Chat(context.Background(), shared.Map{})
+	var httpErr HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusBadGateway || !strings.Contains(httpErr.Message, "too large") {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
 func TestDebugLogBodyLogsRedactedUpstreamBodies(t *testing.T) {
 	var logs bytes.Buffer
 	previousOutput := log.Writer()
@@ -246,6 +259,21 @@ func TestStreamChatStopsWhenHandlerReturnsError(t *testing.T) {
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStreamChatRejectsOversizedErrorBody(t *testing.T) {
+	client := New("https://glm.test/api", "sk-upstream", time.Second, true)
+	client.MaxResponseBodyBytes = 8
+	client.HTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return textResponse(http.StatusBadGateway, strings.Repeat("x", 9)), nil
+	})}
+	err := client.StreamChat(context.Background(), shared.Map{"stream": true}, func(shared.Map) error {
+		return nil
+	})
+	var httpErr HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusBadGateway || !strings.Contains(httpErr.Message, "too large") {
+		t.Fatalf("error = %#v", err)
 	}
 }
 

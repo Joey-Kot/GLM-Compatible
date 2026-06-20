@@ -72,6 +72,16 @@ func debugTestServer(up fakeUpstream) *Server {
 	}, up, state.New())
 }
 
+func limitedBodyTestServer(limit int64) *Server {
+	return New(config.Config{
+		APITokens:           []string{"sk-test"},
+		DefaultModel:        "glm-5.1",
+		ModelIDs:            []string{"glm-5.1"},
+		GLMBaseURL:          "https://api.z.ai/api",
+		MaxRequestBodyBytes: limit,
+	}, fakeUpstream{}, state.New())
+}
+
 func TestCreateResponseEndpointStoresAndRetrieves(t *testing.T) {
 	server := testServer(fakeUpstream{chatFn: func(payload shared.Map) (shared.Map, error) {
 		messages := payload["messages"].([]map[string]any)
@@ -369,6 +379,55 @@ func TestDebugLogBodyLogsRedactedRequestAndResponse(t *testing.T) {
 	}
 	if !strings.Contains(text, `"api_key":"[REDACTED]"`) || !strings.Contains(text, `"content":"Hi!"`) {
 		t.Fatalf("debug logs = %s", text)
+	}
+}
+
+func TestReadJSONRejectsOversizedBody(t *testing.T) {
+	server := limitedBodyTestServer(8)
+	rec := request(server, http.MethodPost, "/v1/chat/completions", `{"model":"glm-5.1"}`)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMemoryHealthReportsStoreStats(t *testing.T) {
+	store := state.New()
+	store.SaveResponse(shared.Map{"id": "resp_1"}, nil, []shared.Map{{"id": "msg_1"}}, true, "", nil)
+	server := New(config.Config{
+		APITokens:    []string{"sk-test"},
+		DefaultModel: "glm-5.1",
+		ModelIDs:     []string{"glm-5.1"},
+		GLMBaseURL:   "https://api.z.ai/api",
+	}, fakeUpstream{}, store)
+
+	rec := request(server, http.MethodGet, "/healthz/memory", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var data map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &data); err != nil {
+		t.Fatal(err)
+	}
+	storeStats, ok := data["store"].(map[string]any)
+	if !ok {
+		t.Fatalf("store stats missing: %#v", data)
+	}
+	if int(storeStats["responses"].(float64)) != 1 || int(storeStats["items"].(float64)) != 1 {
+		t.Fatalf("store stats = %#v", storeStats)
+	}
+}
+
+func TestDebugPprofRequiresFlag(t *testing.T) {
+	server := testServer(fakeUpstream{})
+	rec := request(server, http.MethodGet, "/debug/pprof/", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	server.cfg.DebugPprof = true
+	rec = request(server, http.MethodGet, "/debug/pprof/", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

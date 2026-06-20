@@ -13,6 +13,7 @@ package state
 
 import (
 	"testing"
+	"time"
 
 	"glm-compatible/internal/adapters/openai/shared"
 )
@@ -156,6 +157,24 @@ func TestUnstoredResponseStillAppendsConversationItems(t *testing.T) {
 	}
 }
 
+func TestResponseDoesNotRecreateDeletedConversationItems(t *testing.T) {
+	store := New()
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{{"id": "msg_1"}})
+	if !store.DeleteConversation("conv_1") {
+		t.Fatal("delete conversation failed")
+	}
+
+	store.SaveResponse(shared.Map{"id": "resp_1"}, nil, []shared.Map{{"id": "msg_out"}}, false, "conv_1", []shared.Map{{"id": "msg_in"}})
+	if items, ok := store.ConversationItemsFor("conv_1"); ok || items != nil {
+		t.Fatalf("deleted conversation was recreated: %#v ok=%v", items, ok)
+	}
+	for _, id := range []string{"msg_in", "msg_out"} {
+		if item, ok := store.Item(id); ok {
+			t.Fatalf("orphan conversation item %s still indexed: %#v", id, item)
+		}
+	}
+}
+
 func TestChatCompletionLifecycleAndFiltering(t *testing.T) {
 	store := New()
 	store.SaveChatCompletion(
@@ -180,5 +199,115 @@ func TestChatCompletionLifecycleAndFiltering(t *testing.T) {
 	}
 	if !store.DeleteChatCompletion("chat_1") || store.DeleteChatCompletion("chat_1") {
 		t.Fatalf("delete chat returned unexpected result")
+	}
+}
+
+func TestStoreEvictsOldResponses(t *testing.T) {
+	store := NewWithLimits(Limits{MaxResponses: 1})
+	store.SaveResponse(shared.Map{"id": "resp_1"}, nil, []shared.Map{{"id": "msg_1"}}, true, "", nil)
+	store.SaveResponse(shared.Map{"id": "resp_2"}, nil, []shared.Map{{"id": "msg_2"}}, true, "", nil)
+
+	if _, ok := store.Response("resp_1"); ok {
+		t.Fatal("old response was not evicted")
+	}
+	if _, ok := store.Item("msg_1"); ok {
+		t.Fatal("old response item was not released")
+	}
+	if _, ok := store.Response("resp_2"); !ok {
+		t.Fatal("new response was evicted")
+	}
+}
+
+func TestStoreEvictsOldConversations(t *testing.T) {
+	store := NewWithLimits(Limits{MaxConversations: 1})
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{{"id": "msg_1"}})
+	store.SaveConversation(shared.Map{"id": "conv_2"}, []shared.Map{{"id": "msg_2"}})
+
+	if _, ok := store.Conversation("conv_1"); ok {
+		t.Fatal("old conversation was not evicted")
+	}
+	if _, ok := store.Item("msg_1"); ok {
+		t.Fatal("old conversation item was not released")
+	}
+	if _, ok := store.Conversation("conv_2"); !ok {
+		t.Fatal("new conversation was evicted")
+	}
+}
+
+func TestStoreEvictionKeepsSharedItems(t *testing.T) {
+	store := NewWithLimits(Limits{MaxResponses: 1, MaxConversations: 1})
+	sharedItem := shared.Map{"id": "msg_shared"}
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{sharedItem})
+	store.SaveResponse(shared.Map{"id": "resp_1"}, []shared.Map{sharedItem}, nil, true, "", nil)
+	store.SaveResponse(shared.Map{"id": "resp_2"}, nil, []shared.Map{{"id": "msg_2"}}, true, "", nil)
+
+	if _, ok := store.Response("resp_1"); ok {
+		t.Fatal("old response was not evicted")
+	}
+	if _, ok := store.Item("msg_shared"); !ok {
+		t.Fatal("shared item was deleted while conversation still references it")
+	}
+
+	store.SaveConversation(shared.Map{"id": "conv_2"}, []shared.Map{{"id": "msg_3"}})
+	if _, ok := store.Conversation("conv_1"); ok {
+		t.Fatal("old conversation was not evicted")
+	}
+	if _, ok := store.Item("msg_shared"); ok {
+		t.Fatal("shared item survived after all references were evicted")
+	}
+}
+
+func TestStoreEvictsChatCompletions(t *testing.T) {
+	store := NewWithLimits(Limits{MaxChatCompletions: 1})
+	store.SaveChatCompletion(shared.Map{"id": "chat_1"}, []shared.Map{{"id": "msg_1"}})
+	store.SaveChatCompletion(shared.Map{"id": "chat_2"}, []shared.Map{{"id": "msg_2"}})
+
+	if _, ok := store.ChatCompletion("chat_1"); ok {
+		t.Fatal("old chat completion was not evicted")
+	}
+	if messages, ok := store.ChatCompletionMessagesFor("chat_1"); ok || messages != nil {
+		t.Fatalf("old chat messages still available: %#v ok=%v", messages, ok)
+	}
+	if _, ok := store.ChatCompletion("chat_2"); !ok {
+		t.Fatal("new chat completion was evicted")
+	}
+}
+
+func TestStoreLimitZeroMeansUnlimited(t *testing.T) {
+	store := NewWithLimits(Limits{})
+	for _, id := range []string{"resp_1", "resp_2"} {
+		store.SaveResponse(shared.Map{"id": id}, nil, nil, true, "", nil)
+	}
+	for _, id := range []string{"chat_1", "chat_2"} {
+		store.SaveChatCompletion(shared.Map{"id": id}, nil)
+	}
+	for _, id := range []string{"conv_1", "conv_2"} {
+		store.SaveConversation(shared.Map{"id": id}, nil)
+	}
+
+	stats := store.Stats()
+	if stats.Responses != 2 || stats.ChatCompletions != 2 || stats.Conversations != 2 {
+		t.Fatalf("unexpected stats with unlimited store: %#v", stats)
+	}
+}
+
+func TestStoreTTLEvictsUnaccessedEntries(t *testing.T) {
+	store := NewWithLimits(Limits{TTL: time.Second})
+	now := time.Unix(100, 0)
+	store.now = func() time.Time { return now }
+	store.SaveResponse(shared.Map{"id": "resp_1"}, nil, []shared.Map{{"id": "msg_1"}}, true, "", nil)
+
+	now = now.Add(500 * time.Millisecond)
+	if _, ok := store.Response("resp_1"); !ok {
+		t.Fatal("response expired before ttl")
+	}
+	now = now.Add(1100 * time.Millisecond)
+	store.Prune()
+
+	if _, ok := store.Response("resp_1"); ok {
+		t.Fatal("response was not pruned after ttl")
+	}
+	if _, ok := store.Item("msg_1"); ok {
+		t.Fatal("expired response item was not released")
 	}
 }

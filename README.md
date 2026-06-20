@@ -73,14 +73,22 @@ Container environment reference:
 | `GLM_BASE_URL` | `--glm-base-url` |
 | `GLM_MODEL` | `--glm-model` |
 | `GLM_MODELS` | `--glm-models` |
+| `STORE_TTL` | `--store-ttl` |
+| `STORE_MAX_RESPONSES` | `--store-max-responses` |
+| `STORE_MAX_CHAT_COMPLETIONS` | `--store-max-chat-completions` |
+| `STORE_MAX_CONVERSATIONS` | `--store-max-conversations` |
+| `STORE_PRUNE_INTERVAL` | `--store-prune-interval` |
 | `GLM_HTTP_TIMEOUT` | `--glm-http-timeout` |
+| `GLM_MAX_RESPONSE_BODY_BYTES` | `--glm-max-response-body-bytes` |
 | `GLM_MAX_IDLE_CONNS` | `--glm-max-idle-conns` |
 | `GLM_MAX_IDLE_CONNS_PER_HOST` | `--glm-max-idle-conns-per-host` |
 | `GLM_MAX_CONNS_PER_HOST` | `--glm-max-conns-per-host` |
+| `MAX_REQUEST_BODY_BYTES` | `--max-request-body-bytes` |
 | `READ_HEADER_TIMEOUT` | `--read-header-timeout` |
 | `IDLE_TIMEOUT` | `--idle-timeout` |
 | `VERIFY_SSL` | `--verify-ssl` |
 | `DEBUG_LOG_BODY` | `--debug-log-body` |
+| `DEBUG_PPROF` | `--debug-pprof` |
 
 Flag reference:
 
@@ -92,14 +100,22 @@ Flag reference:
 | `--glm-base-url` | GLM upstream base URL. If omitted or set to an empty string, the default `https://api.z.ai/api` is used. It may be `http://` or `https://`, and it may point directly to `/paas/v4/chat/completions`. |
 | `--glm-model` | Default model ID forwarded to GLM. Defaults to `glm-5.1`. |
 | `--glm-models` | Model IDs exposed by `/v1/models`, separated by commas. If the default model is not included, it is automatically inserted at the front of the list. |
+| `--store-ttl` | Local in-memory store TTL in seconds. Defaults to `3600`; set to `0` to disable TTL. |
+| `--store-max-responses` | Maximum locally stored Responses entries. Defaults to `1000`; set to `0` to disable this limit. |
+| `--store-max-chat-completions` | Maximum locally stored Chat Completions entries. Defaults to `1000`; set to `0` to disable this limit. |
+| `--store-max-conversations` | Maximum locally stored Conversations entries. Defaults to `1000`; set to `0` to disable this limit. |
+| `--store-prune-interval` | Minimum seconds between in-memory store prune checks on request paths. Defaults to `60`. |
 | `--glm-http-timeout` | GLM upstream HTTP timeout in seconds. Defaults to `120`. |
+| `--glm-max-response-body-bytes` | Maximum upstream GLM non-streaming or error response body size in bytes. Defaults to `33554432`; set to `0` to disable this limit. |
 | `--glm-max-idle-conns` | Maximum idle upstream HTTP connections kept for reuse. Defaults to `200`. |
 | `--glm-max-idle-conns-per-host` | Maximum idle upstream HTTP connections kept per host. Defaults to `100`. |
 | `--glm-max-conns-per-host` | Maximum concurrent upstream HTTP connections per host. Defaults to `0`, which means unlimited. |
+| `--max-request-body-bytes` | Maximum local request body size in bytes. Defaults to `16777216`; set to `0` to disable this limit. |
 | `--read-header-timeout` | Local HTTP read header timeout in seconds. Defaults to `10`. |
 | `--idle-timeout` | Local HTTP idle connection timeout in seconds. Defaults to `120`. |
 | `--verify-ssl` | Whether to verify the GLM upstream HTTPS certificate. Defaults to `true`; set to `false` only for trusted proxies or temporary certificate problems. |
 | `--debug-log-body` | Whether to log redacted local request/response bodies and GLM upstream request/response bodies. Defaults to `false`; API keys, tokens, passwords, secrets, and similar fields are replaced with `[REDACTED]`, and log length is capped. |
+| `--debug-pprof` | Whether to enable authenticated `/debug/pprof/` and `/debug/vars` endpoints. Defaults to `false`. |
 
 See `args.example` for the full flag set.
 
@@ -169,6 +185,7 @@ NOTICE: For Codex CLI MCP namespace tool calls, the Responses adapter expands na
 | --- | --- |
 | `GET /v1/models` | Return the model list exposed to compatible clients. |
 | `GET /health` | Health check endpoint. |
+| `GET /healthz/memory` | Authenticated memory and local store statistics endpoint. |
 
 ## Parameter Mapping
 
@@ -402,7 +419,30 @@ curl http://localhost:8080/v1/responses \
 
 ## Compatibility Notes
 
-This backend stores Responses and Conversations state in memory to support compatibility features such as `previous_response_id`, `conversation`, retrieval, deletion, and input item listing. Without external storage, this local state is lost after service restart.
+This backend stores Responses, Chat Completions, and Conversations state in memory to support compatibility features such as `previous_response_id`, `conversation`, retrieval, deletion, list filtering, metadata updates, and input item listing. Without external storage, this local state is lost after service restart.
+
+### In-Memory Store Reclamation
+
+By default, local `store=true` state is reclaimed on request paths and does not rely on a background goroutine:
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--store-ttl` | `3600` | Keep entries for this many seconds since last access; `0` disables TTL. |
+| `--store-max-responses` | `1000` | Maximum Responses entries; `0` disables this limit. |
+| `--store-max-chat-completions` | `1000` | Maximum Chat Completions entries; `0` disables this limit. |
+| `--store-max-conversations` | `1000` | Maximum Conversations entries; `0` disables this limit. |
+| `--store-prune-interval` | `60` | Minimum seconds between prune checks on request paths. |
+
+When a capacity limit is exceeded, the oldest saved entry of that type is evicted. Evicting a Response or Conversation also removes `ItemsByID` entries that are no longer referenced by any remaining Response or Conversation. Request bodies are limited by `--max-request-body-bytes 16777216` by default; upstream non-streaming and error response bodies are limited by `--glm-max-response-body-bytes 33554432` by default. Set either limit to `0` to disable it.
+
+Use the authenticated memory endpoint to observe memory and store counts:
+
+```bash
+curl -H "Authorization: Bearer sk-local-test" \
+  http://127.0.0.1:8080/healthz/memory
+```
+
+For pprof, explicitly start the service with `--debug-pprof=true`, then access authenticated `/debug/pprof/` or `/debug/vars`. Debug endpoints are disabled by default.
 
 Token counting endpoints call the GLM upstream tokenizer API (`/paas/v4/tokenizer`) and wrap the result in the target protocol's response shape.
 

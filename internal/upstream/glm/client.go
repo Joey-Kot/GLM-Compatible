@@ -29,11 +29,12 @@ import (
 )
 
 type Client struct {
-	BaseURL      string
-	APIKey       string
-	Timeout      time.Duration
-	DebugLogBody bool
-	HTTPClient   *http.Client
+	BaseURL              string
+	APIKey               string
+	Timeout              time.Duration
+	DebugLogBody         bool
+	MaxResponseBodyBytes int64
+	HTTPClient           *http.Client
 }
 
 type TransportConfig struct {
@@ -55,7 +56,13 @@ func New(baseURL, apiKey string, timeout time.Duration, verifySSL bool) *Client 
 }
 
 func NewWithTransportConfig(baseURL, apiKey string, timeout time.Duration, verifySSL bool, transportConfig TransportConfig) *Client {
-	return &Client{BaseURL: baseURL, APIKey: apiKey, Timeout: timeout, HTTPClient: newHTTPClient(timeout, verifySSL, transportConfig)}
+	return &Client{
+		BaseURL:              baseURL,
+		APIKey:               apiKey,
+		Timeout:              timeout,
+		MaxResponseBodyBytes: 32 * 1024 * 1024,
+		HTTPClient:           newHTTPClient(timeout, verifySSL, transportConfig),
+	}
 }
 
 func (c *Client) Chat(ctx context.Context, payload shared.Map) (shared.Map, error) {
@@ -64,6 +71,12 @@ func (c *Client) Chat(ctx context.Context, payload shared.Map) (shared.Map, erro
 
 func (c *Client) Tokenize(ctx context.Context, payload shared.Map) (shared.Map, error) {
 	return c.postJSON(ctx, c.tokenizerURL(), payload, "tokenizer")
+}
+
+func (c *Client) CloseIdleConnections() {
+	if c.HTTPClient != nil {
+		c.HTTPClient.CloseIdleConnections()
+	}
 }
 
 func (c *Client) StreamChat(ctx context.Context, payload shared.Map, handle func(shared.Map) error) error {
@@ -82,7 +95,10 @@ func (c *Client) StreamChat(ctx context.Context, payload shared.Map, handle func
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, err := c.readResponseBody(resp.Body)
+		if err != nil {
+			return err
+		}
 		if c.DebugLogBody {
 			log.Printf("debug body glm stream error status=%d body=%s", resp.StatusCode, debuglog.Body(body))
 		}
@@ -131,7 +147,7 @@ func (c *Client) postJSON(ctx context.Context, url string, payload shared.Map, l
 		return nil, fmt.Errorf("external GLM %s request failed: %w", label, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := c.readResponseBody(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +203,21 @@ func (c *Client) httpClient() *http.Client {
 		return c.HTTPClient
 	}
 	return &http.Client{Timeout: c.Timeout}
+}
+
+func (c *Client) readResponseBody(body io.Reader) ([]byte, error) {
+	if c.MaxResponseBodyBytes <= 0 {
+		return io.ReadAll(body)
+	}
+	limited := io.LimitReader(body, c.MaxResponseBodyBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > c.MaxResponseBodyBytes {
+		return data[:c.MaxResponseBodyBytes], HTTPError{StatusCode: http.StatusBadGateway, Message: "External GLM response body is too large"}
+	}
+	return data, nil
 }
 
 func newHTTPClient(timeout time.Duration, verifySSL bool, config TransportConfig) *http.Client {

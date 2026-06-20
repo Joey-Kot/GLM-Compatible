@@ -4,11 +4,19 @@
 --glm-base-url https://api.z.ai/api
 --glm-model glm-5.1
 --glm-models glm-5.1
+--store-ttl 3600
+--store-max-responses 1000
+--store-max-chat-completions 1000
+--store-max-conversations 1000
+--store-prune-interval 60
 --glm-http-timeout 120
+--glm-max-response-body-bytes 33554432
 --glm-max-idle-conns 200
 --glm-max-idle-conns-per-host 100
 --glm-max-conns-per-host 0
+--max-request-body-bytes 16777216
 --read-header-timeout 10
 --idle-timeout 120
 --verify-ssl=true
 --debug-log-body=false
+--debug-pprof=false

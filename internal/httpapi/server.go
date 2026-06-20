@@ -17,10 +17,13 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"io"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -95,6 +98,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "/"
 	}
+	if s.handleDiagnostics(w, r, path) {
+		return
+	}
+	s.store.PruneIfDue()
 	switch {
 	case path == "/paas/v4/chat/completions":
 		s.handleGLMChatCompletions(w, r)
@@ -612,7 +619,9 @@ func (s *Server) streamAnthropicMessage(w http.ResponseWriter, r *http.Request, 
 	setSSEHeaders(w)
 	flusher, _ := w.(http.Flusher)
 	messageID := shared.NewID("msg")
-	_ = sse.Event(w, "message_start", anthropic.StreamStart(messageID, payload, s.cfg.DefaultModel))
+	if err := sse.Event(w, "message_start", anthropic.StreamStart(messageID, payload, s.cfg.DefaultModel)); err != nil {
+		return
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -642,18 +651,26 @@ func (s *Server) streamAnthropicMessage(w http.ResponseWriter, r *http.Request, 
 			if !thinkingStarted {
 				thinkingStarted = true
 				textIndex = 1
-				_ = sse.Event(w, "content_block_start", shared.Map{"type": "content_block_start", "index": 0, "content_block": shared.Map{"type": "thinking", "thinking": "", "signature": ""}})
+				if err := sse.Event(w, "content_block_start", shared.Map{"type": "content_block_start", "index": 0, "content_block": shared.Map{"type": "thinking", "thinking": "", "signature": ""}}); err != nil {
+					return err
+				}
 			}
-			_ = sse.Event(w, "content_block_delta", anthropic.ThinkingDelta(reasoning))
+			if err := sse.Event(w, "content_block_delta", anthropic.ThinkingDelta(reasoning)); err != nil {
+				return err
+			}
 		}
 		if text := shared.StringValue(delta["content"]); text != "" {
 			if !textStarted {
 				textStarted = true
-				_ = sse.Event(w, "content_block_start", shared.Map{"type": "content_block_start", "index": textIndex, "content_block": shared.Map{"type": "text", "text": ""}})
+				if err := sse.Event(w, "content_block_start", shared.Map{"type": "content_block_start", "index": textIndex, "content_block": shared.Map{"type": "text", "text": ""}}); err != nil {
+					return err
+				}
 			}
 			event := anthropic.TextDelta(text)
 			event["index"] = textIndex
-			_ = sse.Event(w, "content_block_delta", event)
+			if err := sse.Event(w, "content_block_delta", event); err != nil {
+				return err
+			}
 		}
 		if rawCalls, ok := delta["tool_calls"].([]any); ok {
 			stopReason = "tool_use"
@@ -735,8 +752,12 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 	messageID := shared.NewID("msg")
 	createdAt := shared.NowSeconds()
 	shell := s.responses.BaseResponse(payload, responseID, createdAt, "in_progress", nil, "", nil, nil)
-	_ = sse.Event(w, "response.created", shared.Map{"type": "response.created", "response": shell})
-	_ = sse.Event(w, "response.in_progress", shared.Map{"type": "response.in_progress", "response": shell})
+	if err := sse.Event(w, "response.created", shared.Map{"type": "response.created", "response": shell}); err != nil {
+		return
+	}
+	if err := sse.Event(w, "response.in_progress", shared.Map{"type": "response.in_progress", "response": shell}); err != nil {
+		return
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -782,12 +803,18 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 					textOutputIndex = 1
 				}
 				item := responses.ReasoningSummaryItem("", reasoningID, "in_progress")
-				_ = sse.Event(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": reasoningOutputIndex, "item": item})
+				if err := sse.Event(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": reasoningOutputIndex, "item": item}); err != nil {
+					return err
+				}
 				part := shared.Map{"type": "summary_text", "text": ""}
-				_ = sse.Event(w, "response.reasoning_summary_part.added", shared.Map{"type": "response.reasoning_summary_part.added", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "part": part})
+				if err := sse.Event(w, "response.reasoning_summary_part.added", shared.Map{"type": "response.reasoning_summary_part.added", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "part": part}); err != nil {
+					return err
+				}
 			}
 			reasoning += dr
-			_ = sse.Event(w, "response.reasoning_summary_text.delta", shared.Map{"type": "response.reasoning_summary_text.delta", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "delta": dr})
+			if err := sse.Event(w, "response.reasoning_summary_text.delta", shared.Map{"type": "response.reasoning_summary_text.delta", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "delta": dr}); err != nil {
+				return err
+			}
 		}
 		if dt := shared.StringValue(delta["content"]); dt != "" {
 			if !textStarted {
@@ -796,12 +823,18 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 					textOutputIndex = 1
 				}
 				item := shared.Map{"id": messageID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}
-				_ = sse.Event(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": textOutputIndex, "item": item})
+				if err := sse.Event(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": textOutputIndex, "item": item}); err != nil {
+					return err
+				}
 				part := shared.Map{"type": "output_text", "text": "", "annotations": []any{}}
-				_ = sse.Event(w, "response.content_part.added", shared.Map{"type": "response.content_part.added", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "part": part})
+				if err := sse.Event(w, "response.content_part.added", shared.Map{"type": "response.content_part.added", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "part": part}); err != nil {
+					return err
+				}
 			}
 			content += dt
-			_ = sse.Event(w, "response.output_text.delta", shared.Map{"type": "response.output_text.delta", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "delta": dt})
+			if err := sse.Event(w, "response.output_text.delta", shared.Map{"type": "response.output_text.delta", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "delta": dt}); err != nil {
+				return err
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -903,8 +936,17 @@ func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, optional bool)
 		return shared.Map{}, true
 	}
 	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
+	reader := io.Reader(r.Body)
+	if s.cfg.MaxRequestBodyBytes > 0 {
+		reader = http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes)
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			openAIError(w, http.StatusRequestEntityTooLarge, "Request body is too large", "invalid_request_error", "")
+			return nil, false
+		}
 		openAIError(w, http.StatusBadRequest, "Request body could not be read", "invalid_request_error", "")
 		return nil, false
 	}
@@ -999,6 +1041,58 @@ func (s *Server) countGLMTokens(ctx context.Context, payload shared.Map) (int, e
 		return 0, nil
 	}
 	return shared.IntValue(usage["total_tokens"], shared.IntValue(usage["prompt_tokens"], 0)), nil
+}
+
+func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request, path string) bool {
+	if r.Method == http.MethodGet && path == "/healthz/memory" {
+		s.writeMemoryHealth(w)
+		return true
+	}
+	if !s.cfg.DebugPprof {
+		return false
+	}
+	switch {
+	case path == "/debug/vars" && r.Method == http.MethodGet:
+		expvar.Handler().ServeHTTP(w, r)
+		return true
+	case path == "/debug/pprof":
+		s.servePprof(w, r, "")
+		return true
+	case strings.HasPrefix(path, "/debug/pprof/"):
+		s.servePprof(w, r, strings.TrimPrefix(path, "/debug/pprof/"))
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) writeMemoryHealth(w http.ResponseWriter) {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	writeJSON(w, http.StatusOK, shared.Map{
+		"alloc":      mem.Alloc,
+		"sys":        mem.Sys,
+		"num_gc":     mem.NumGC,
+		"goroutines": runtime.NumGoroutine(),
+		"store":      s.store.Stats(),
+	})
+}
+
+func (s *Server) servePprof(w http.ResponseWriter, r *http.Request, name string) {
+	switch name {
+	case "":
+		pprof.Index(w, r)
+	case "cmdline":
+		pprof.Cmdline(w, r)
+	case "profile":
+		pprof.Profile(w, r)
+	case "symbol":
+		pprof.Symbol(w, r)
+	case "trace":
+		pprof.Trace(w, r)
+	default:
+		pprof.Handler(name).ServeHTTP(w, r)
+	}
 }
 
 func modelForTokenize(payload shared.Map, defaultModel string) string {

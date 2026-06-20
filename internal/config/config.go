@@ -24,20 +24,28 @@ const (
 )
 
 type Config struct {
-	Listen                 string
-	APITokens              []string
-	GLMAPIKey              string
-	GLMBaseURL             string
-	DefaultModel           string
-	ModelIDs               []string
-	GLMHTTPTimeout         time.Duration
-	GLMMaxIdleConns        int
-	GLMMaxIdleConnsPerHost int
-	GLMMaxConnsPerHost     int
-	ReadHeaderTimeout      time.Duration
-	IdleTimeout            time.Duration
-	DebugLogBody           bool
-	VerifySSL              bool
+	Listen                  string
+	APITokens               []string
+	GLMAPIKey               string
+	GLMBaseURL              string
+	DefaultModel            string
+	ModelIDs                []string
+	StoreTTL                time.Duration
+	StoreMaxResponses       int
+	StoreMaxChatCompletions int
+	StoreMaxConversations   int
+	StorePruneInterval      time.Duration
+	GLMHTTPTimeout          time.Duration
+	GLMMaxResponseBodyBytes int64
+	GLMMaxIdleConns         int
+	GLMMaxIdleConnsPerHost  int
+	GLMMaxConnsPerHost      int
+	MaxRequestBodyBytes     int64
+	ReadHeaderTimeout       time.Duration
+	IdleTimeout             time.Duration
+	DebugLogBody            bool
+	DebugPprof              bool
+	VerifySSL               bool
 }
 
 func Parse(args []string) (Config, error) {
@@ -45,13 +53,22 @@ func Parse(args []string) (Config, error) {
 
 	var apiTokenCSV string
 	var modelCSV string
+	var storeTTLSeconds float64
+	var storePruneIntervalSeconds float64
 	var timeoutSeconds float64
+	var glmMaxResponseBodyBytes int64
+	var maxRequestBodyBytes int64
 	var readHeaderTimeoutSeconds float64
 	var idleTimeoutSeconds float64
 	cfg := Config{
-		GLMMaxIdleConns:        200,
-		GLMMaxIdleConnsPerHost: 100,
-		VerifySSL:              true,
+		StoreMaxResponses:       1000,
+		StoreMaxChatCompletions: 1000,
+		StoreMaxConversations:   1000,
+		GLMMaxResponseBodyBytes: 32 * 1024 * 1024,
+		GLMMaxIdleConns:         200,
+		GLMMaxIdleConnsPerHost:  100,
+		MaxRequestBodyBytes:     16 * 1024 * 1024,
+		VerifySSL:               true,
 	}
 
 	fs.StringVar(&cfg.Listen, "listen", ":8080", "HTTP listen address")
@@ -60,13 +77,21 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.GLMBaseURL, "glm-base-url", DefaultGLMBaseURL, "GLM upstream base URL")
 	fs.StringVar(&cfg.DefaultModel, "glm-model", DefaultModel, "default GLM model")
 	fs.StringVar(&modelCSV, "glm-models", "", "comma-separated model IDs exposed by /v1/models")
+	fs.Float64Var(&storeTTLSeconds, "store-ttl", 3600, "local store TTL in seconds; 0 means unlimited")
+	fs.IntVar(&cfg.StoreMaxResponses, "store-max-responses", cfg.StoreMaxResponses, "maximum stored Responses; 0 means unlimited")
+	fs.IntVar(&cfg.StoreMaxChatCompletions, "store-max-chat-completions", cfg.StoreMaxChatCompletions, "maximum stored Chat Completions; 0 means unlimited")
+	fs.IntVar(&cfg.StoreMaxConversations, "store-max-conversations", cfg.StoreMaxConversations, "maximum stored Conversations; 0 means unlimited")
+	fs.Float64Var(&storePruneIntervalSeconds, "store-prune-interval", 60, "minimum seconds between local store prune checks on request paths")
 	fs.Float64Var(&timeoutSeconds, "glm-http-timeout", 120, "GLM HTTP timeout in seconds")
+	fs.Int64Var(&glmMaxResponseBodyBytes, "glm-max-response-body-bytes", cfg.GLMMaxResponseBodyBytes, "maximum upstream GLM non-stream/error response body bytes; 0 means unlimited")
 	fs.IntVar(&cfg.GLMMaxIdleConns, "glm-max-idle-conns", cfg.GLMMaxIdleConns, "maximum idle upstream HTTP connections")
 	fs.IntVar(&cfg.GLMMaxIdleConnsPerHost, "glm-max-idle-conns-per-host", cfg.GLMMaxIdleConnsPerHost, "maximum idle upstream HTTP connections per host")
 	fs.IntVar(&cfg.GLMMaxConnsPerHost, "glm-max-conns-per-host", 0, "maximum upstream HTTP connections per host; 0 means unlimited")
+	fs.Int64Var(&maxRequestBodyBytes, "max-request-body-bytes", cfg.MaxRequestBodyBytes, "maximum local request body bytes; 0 means unlimited")
 	fs.Float64Var(&readHeaderTimeoutSeconds, "read-header-timeout", 10, "local HTTP read header timeout in seconds")
 	fs.Float64Var(&idleTimeoutSeconds, "idle-timeout", 120, "local HTTP idle timeout in seconds")
 	fs.BoolVar(&cfg.DebugLogBody, "debug-log-body", false, "log redacted request/response bodies")
+	fs.BoolVar(&cfg.DebugPprof, "debug-pprof", false, "enable authenticated /debug/pprof and /debug/vars endpoints")
 	fs.BoolVar(&cfg.VerifySSL, "verify-ssl", true, "verify GLM upstream TLS certificates")
 
 	if err := fs.Parse(args); err != nil {
@@ -86,8 +111,26 @@ func Parse(args []string) (Config, error) {
 	if cfg.GLMBaseURL == "" {
 		cfg.GLMBaseURL = DefaultGLMBaseURL
 	}
+	if storeTTLSeconds < 0 {
+		return Config{}, fmt.Errorf("--store-ttl must be non-negative")
+	}
+	if cfg.StoreMaxResponses < 0 {
+		return Config{}, fmt.Errorf("--store-max-responses must be non-negative")
+	}
+	if cfg.StoreMaxChatCompletions < 0 {
+		return Config{}, fmt.Errorf("--store-max-chat-completions must be non-negative")
+	}
+	if cfg.StoreMaxConversations < 0 {
+		return Config{}, fmt.Errorf("--store-max-conversations must be non-negative")
+	}
+	if storePruneIntervalSeconds < 0 {
+		return Config{}, fmt.Errorf("--store-prune-interval must be non-negative")
+	}
 	if timeoutSeconds <= 0 {
 		return Config{}, fmt.Errorf("--glm-http-timeout must be positive")
+	}
+	if glmMaxResponseBodyBytes < 0 {
+		return Config{}, fmt.Errorf("--glm-max-response-body-bytes must be non-negative")
 	}
 	if cfg.GLMMaxIdleConns < 0 {
 		return Config{}, fmt.Errorf("--glm-max-idle-conns must be non-negative")
@@ -98,13 +141,20 @@ func Parse(args []string) (Config, error) {
 	if cfg.GLMMaxConnsPerHost < 0 {
 		return Config{}, fmt.Errorf("--glm-max-conns-per-host must be non-negative")
 	}
+	if maxRequestBodyBytes < 0 {
+		return Config{}, fmt.Errorf("--max-request-body-bytes must be non-negative")
+	}
 	if readHeaderTimeoutSeconds <= 0 {
 		return Config{}, fmt.Errorf("--read-header-timeout must be positive")
 	}
 	if idleTimeoutSeconds <= 0 {
 		return Config{}, fmt.Errorf("--idle-timeout must be positive")
 	}
+	cfg.StoreTTL = time.Duration(storeTTLSeconds * float64(time.Second))
+	cfg.StorePruneInterval = time.Duration(storePruneIntervalSeconds * float64(time.Second))
 	cfg.GLMHTTPTimeout = time.Duration(timeoutSeconds * float64(time.Second))
+	cfg.GLMMaxResponseBodyBytes = glmMaxResponseBodyBytes
+	cfg.MaxRequestBodyBytes = maxRequestBodyBytes
 	cfg.ReadHeaderTimeout = time.Duration(readHeaderTimeoutSeconds * float64(time.Second))
 	cfg.IdleTimeout = time.Duration(idleTimeoutSeconds * float64(time.Second))
 	return cfg, nil

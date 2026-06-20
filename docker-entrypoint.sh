@@ -15,8 +15,17 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
   if [ -n "${VERIFY_SSL:-}" ]; then
     set -- "--verify-ssl=${VERIFY_SSL}" "$@"
   fi
+  if [ -n "${DEBUG_PPROF:-}" ]; then
+    set -- "--debug-pprof=${DEBUG_PPROF}" "$@"
+  fi
+  if [ -n "${MAX_REQUEST_BODY_BYTES:-}" ]; then
+    set -- "--max-request-body-bytes" "${MAX_REQUEST_BODY_BYTES}" "$@"
+  fi
   if [ -n "${GLM_HTTP_TIMEOUT:-}" ]; then
     set -- "--glm-http-timeout" "${GLM_HTTP_TIMEOUT}" "$@"
+  fi
+  if [ -n "${GLM_MAX_RESPONSE_BODY_BYTES:-}" ]; then
+    set -- "--glm-max-response-body-bytes" "${GLM_MAX_RESPONSE_BODY_BYTES}" "$@"
   fi
   if [ -n "${GLM_MAX_IDLE_CONNS:-}" ]; then
     set -- "--glm-max-idle-conns" "${GLM_MAX_IDLE_CONNS}" "$@"
@@ -26,6 +35,21 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
   fi
   if [ -n "${GLM_MAX_CONNS_PER_HOST:-}" ]; then
     set -- "--glm-max-conns-per-host" "${GLM_MAX_CONNS_PER_HOST}" "$@"
+  fi
+  if [ -n "${STORE_PRUNE_INTERVAL:-}" ]; then
+    set -- "--store-prune-interval" "${STORE_PRUNE_INTERVAL}" "$@"
+  fi
+  if [ -n "${STORE_MAX_CONVERSATIONS:-}" ]; then
+    set -- "--store-max-conversations" "${STORE_MAX_CONVERSATIONS}" "$@"
+  fi
+  if [ -n "${STORE_MAX_CHAT_COMPLETIONS:-}" ]; then
+    set -- "--store-max-chat-completions" "${STORE_MAX_CHAT_COMPLETIONS}" "$@"
+  fi
+  if [ -n "${STORE_MAX_RESPONSES:-}" ]; then
+    set -- "--store-max-responses" "${STORE_MAX_RESPONSES}" "$@"
+  fi
+  if [ -n "${STORE_TTL:-}" ]; then
+    set -- "--store-ttl" "${STORE_TTL}" "$@"
   fi
   if [ -n "${READ_HEADER_TIMEOUT:-}" ]; then
     set -- "--read-header-timeout" "${READ_HEADER_TIMEOUT}" "$@"

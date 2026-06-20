@@ -37,6 +37,24 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.GLMHTTPTimeout != 120*time.Second {
 		t.Fatalf("GLMHTTPTimeout = %s", cfg.GLMHTTPTimeout)
 	}
+	if cfg.GLMMaxResponseBodyBytes != 32*1024*1024 {
+		t.Fatalf("GLMMaxResponseBodyBytes = %d", cfg.GLMMaxResponseBodyBytes)
+	}
+	if cfg.StoreTTL != time.Hour {
+		t.Fatalf("StoreTTL = %s", cfg.StoreTTL)
+	}
+	if cfg.StoreMaxResponses != 1000 {
+		t.Fatalf("StoreMaxResponses = %d", cfg.StoreMaxResponses)
+	}
+	if cfg.StoreMaxChatCompletions != 1000 {
+		t.Fatalf("StoreMaxChatCompletions = %d", cfg.StoreMaxChatCompletions)
+	}
+	if cfg.StoreMaxConversations != 1000 {
+		t.Fatalf("StoreMaxConversations = %d", cfg.StoreMaxConversations)
+	}
+	if cfg.StorePruneInterval != time.Minute {
+		t.Fatalf("StorePruneInterval = %s", cfg.StorePruneInterval)
+	}
 	if cfg.GLMMaxIdleConns != 200 {
 		t.Fatalf("GLMMaxIdleConns = %d", cfg.GLMMaxIdleConns)
 	}
@@ -45,6 +63,9 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if cfg.GLMMaxConnsPerHost != 0 {
 		t.Fatalf("GLMMaxConnsPerHost = %d", cfg.GLMMaxConnsPerHost)
+	}
+	if cfg.MaxRequestBodyBytes != 16*1024*1024 {
+		t.Fatalf("MaxRequestBodyBytes = %d", cfg.MaxRequestBodyBytes)
 	}
 	if cfg.ReadHeaderTimeout != 10*time.Second {
 		t.Fatalf("ReadHeaderTimeout = %s", cfg.ReadHeaderTimeout)
@@ -65,13 +86,21 @@ func TestParseCommandLineFlags(t *testing.T) {
 		"--glm-base-url", "https://example.test/v1",
 		"--glm-model", "glm-4.7-flash",
 		"--glm-models", "glm-5.1,glm-4.7-flash",
+		"--store-ttl", "1800",
+		"--store-max-responses", "11",
+		"--store-max-chat-completions", "12",
+		"--store-max-conversations", "13",
+		"--store-prune-interval", "30",
 		"--glm-http-timeout", "2.5",
+		"--glm-max-response-body-bytes", "4096",
 		"--glm-max-idle-conns", "300",
 		"--glm-max-idle-conns-per-host", "150",
 		"--glm-max-conns-per-host", "80",
+		"--max-request-body-bytes", "2048",
 		"--read-header-timeout", "3.5",
 		"--idle-timeout", "45",
 		"--debug-log-body=true",
+		"--debug-pprof=true",
 		"--verify-ssl=false",
 	})
 	if err != nil {
@@ -89,6 +118,18 @@ func TestParseCommandLineFlags(t *testing.T) {
 	if cfg.GLMHTTPTimeout != 2500*time.Millisecond {
 		t.Fatalf("GLMHTTPTimeout = %s", cfg.GLMHTTPTimeout)
 	}
+	if cfg.GLMMaxResponseBodyBytes != 4096 {
+		t.Fatalf("GLMMaxResponseBodyBytes = %d", cfg.GLMMaxResponseBodyBytes)
+	}
+	if cfg.StoreTTL != 1800*time.Second {
+		t.Fatalf("StoreTTL = %s", cfg.StoreTTL)
+	}
+	if cfg.StoreMaxResponses != 11 || cfg.StoreMaxChatCompletions != 12 || cfg.StoreMaxConversations != 13 {
+		t.Fatalf("store limits = %#v", cfg)
+	}
+	if cfg.StorePruneInterval != 30*time.Second {
+		t.Fatalf("StorePruneInterval = %s", cfg.StorePruneInterval)
+	}
 	if cfg.GLMMaxIdleConns != 300 {
 		t.Fatalf("GLMMaxIdleConns = %d", cfg.GLMMaxIdleConns)
 	}
@@ -98,13 +139,16 @@ func TestParseCommandLineFlags(t *testing.T) {
 	if cfg.GLMMaxConnsPerHost != 80 {
 		t.Fatalf("GLMMaxConnsPerHost = %d", cfg.GLMMaxConnsPerHost)
 	}
+	if cfg.MaxRequestBodyBytes != 2048 {
+		t.Fatalf("MaxRequestBodyBytes = %d", cfg.MaxRequestBodyBytes)
+	}
 	if cfg.ReadHeaderTimeout != 3500*time.Millisecond {
 		t.Fatalf("ReadHeaderTimeout = %s", cfg.ReadHeaderTimeout)
 	}
 	if cfg.IdleTimeout != 45*time.Second {
 		t.Fatalf("IdleTimeout = %s", cfg.IdleTimeout)
 	}
-	if !cfg.DebugLogBody {
+	if !cfg.DebugLogBody || !cfg.DebugPprof {
 		t.Fatalf("boolean flags were not parsed: %#v", cfg)
 	}
 	if cfg.VerifySSL {
@@ -130,6 +174,19 @@ func TestParseRejectsNonPositiveTimeout(t *testing.T) {
 
 func TestParseRejectsInvalidConnectionLimits(t *testing.T) {
 	for _, flag := range []string{"--glm-max-idle-conns", "--glm-max-idle-conns-per-host", "--glm-max-conns-per-host"} {
+		if _, err := Parse([]string{flag, "-1"}); err == nil {
+			t.Fatalf("expected error for %s", flag)
+		}
+	}
+}
+
+func TestParseRejectsInvalidStoreLimits(t *testing.T) {
+	for _, flag := range []string{"--store-max-responses", "--store-max-chat-completions", "--store-max-conversations"} {
+		if _, err := Parse([]string{flag, "-1"}); err == nil {
+			t.Fatalf("expected error for %s", flag)
+		}
+	}
+	for _, flag := range []string{"--store-ttl", "--store-prune-interval", "--glm-max-response-body-bytes", "--max-request-body-bytes"} {
 		if _, err := Parse([]string{flag, "-1"}); err == nil {
 			t.Fatalf("expected error for %s", flag)
 		}
