@@ -390,6 +390,14 @@ func TestReadJSONRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestReadJSONRejectsTrailingContent(t *testing.T) {
+	server := testServer(fakeUpstream{})
+	rec := request(server, http.MethodPost, "/v1/chat/completions", `{"model":"glm-5.1"} trailing`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMemoryHealthReportsStoreStats(t *testing.T) {
 	store := state.New()
 	store.SaveResponse(shared.Map{"id": "resp_1"}, nil, []shared.Map{{"id": "msg_1"}}, true, "", nil)

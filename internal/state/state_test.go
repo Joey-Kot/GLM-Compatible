@@ -138,6 +138,44 @@ func TestDeleteKeepsItemsReferencedElsewhere(t *testing.T) {
 	}
 }
 
+func TestItemRefCountHandlesOverwriteAndDuplicateConversationItems(t *testing.T) {
+	store := New()
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{{"id": "msg_old"}})
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{{"id": "msg_new"}, {"id": "msg_new"}})
+
+	if _, ok := store.Item("msg_old"); ok {
+		t.Fatal("overwritten conversation item was not released")
+	}
+	if _, ok := store.Item("msg_new"); !ok {
+		t.Fatal("new conversation item was not indexed")
+	}
+	if !store.DeleteConversation("conv_1") {
+		t.Fatal("delete conversation failed")
+	}
+	if item, ok := store.Item("msg_new"); ok {
+		t.Fatalf("duplicate conversation item leaked after delete: %#v", item)
+	}
+}
+
+func TestItemRefCountHandlesResponseOverwrite(t *testing.T) {
+	store := New()
+	store.SaveResponse(shared.Map{"id": "resp_1"}, []shared.Map{{"id": "msg_old"}}, nil, true, "", nil)
+	store.SaveResponse(shared.Map{"id": "resp_1"}, []shared.Map{{"id": "msg_new"}}, nil, true, "", nil)
+
+	if _, ok := store.Item("msg_old"); ok {
+		t.Fatal("overwritten response item was not released")
+	}
+	if _, ok := store.Item("msg_new"); !ok {
+		t.Fatal("new response item was not indexed")
+	}
+	if !store.DeleteResponse("resp_1") {
+		t.Fatal("delete response failed")
+	}
+	if item, ok := store.Item("msg_new"); ok {
+		t.Fatalf("response item leaked after delete: %#v", item)
+	}
+}
+
 func TestUnstoredResponseStillAppendsConversationItems(t *testing.T) {
 	store := New()
 	store.SaveConversation(shared.Map{"id": "conv_1"}, nil)

@@ -26,6 +26,23 @@ func TestCloneMapReturnsIndependentCopy(t *testing.T) {
 	}
 }
 
+func TestCloneMapPreservesJSONNumberAndSlices(t *testing.T) {
+	original := Map{
+		"number": json.Number("9007199254740993"),
+		"items":  []any{Map{"name": "one"}},
+		"maps":   []Map{{"name": "two"}},
+	}
+	cloned := CloneMap(original)
+	if cloned["number"] != json.Number("9007199254740993") {
+		t.Fatalf("number type changed: %#v", cloned["number"])
+	}
+	cloned["items"].([]any)[0].(Map)["name"] = "changed"
+	cloned["maps"].([]Map)[0]["name"] = "changed"
+	if original["items"].([]any)[0].(Map)["name"] != "one" || original["maps"].([]Map)[0]["name"] != "two" {
+		t.Fatalf("original slices were mutated: %#v", original)
+	}
+}
+
 func TestContentToTextHandlesStringsAndParts(t *testing.T) {
 	content := []any{
 		map[string]any{"type": "input_text", "text": "hello "},
