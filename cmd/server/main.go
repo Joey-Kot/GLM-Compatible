@@ -12,6 +12,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,9 @@ import (
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
 		log.Fatal(err)
 	}
 	upstream := glm.NewWithTransportConfig(cfg.GLMBaseURL, cfg.GLMAPIKey, cfg.GLMHTTPTimeout, cfg.VerifySSL, glm.TransportConfig{

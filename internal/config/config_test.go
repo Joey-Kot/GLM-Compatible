@@ -13,6 +13,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -153,6 +154,48 @@ func TestParseCommandLineFlags(t *testing.T) {
 	}
 	if cfg.VerifySSL {
 		t.Fatalf("VerifySSL = %t", cfg.VerifySSL)
+	}
+}
+
+func TestUsageDocumentsFlagsAndEndpoints(t *testing.T) {
+	out := usage()
+	for _, want := range []string{
+		"Usage:\n  glm-compatible [flags]",
+		"Example:\n  glm-compatible --listen :8080 --api-token sk-local-test --glm-api-key sk-your-glm-key",
+		"--api-token string",
+		"--debug-log-body",
+		"--debug-pprof",
+		"--glm-api-key string",
+		"--glm-base-url string",
+		"--glm-http-timeout float",
+		"--glm-max-conns-per-host int",
+		"--glm-max-idle-conns int",
+		"--glm-max-idle-conns-per-host int",
+		"--glm-max-response-body-bytes int",
+		"--glm-model string",
+		"--glm-models string",
+		"--idle-timeout float",
+		"--listen string",
+		"--max-request-body-bytes int",
+		"--read-header-timeout float",
+		"--store-max-chat-completions int",
+		"--store-max-conversations int",
+		"--store-max-responses int",
+		"--store-prune-interval float",
+		"--store-ttl float",
+		"--verify-ssl",
+		"docker-entrypoint.sh maps environment variables to the same flags. See docker.env.example.",
+		"GLM Chat Completions:    POST /paas/v4/chat/completions",
+		"OpenAI Chat Completions: /v1/chat/completions",
+		"OpenAI Responses:        /v1/responses",
+		"OpenAI Conversations:    /v1/conversations",
+		"Anthropic Messages:      /v1/messages",
+		"Gemini Generate Content: /v1beta/models/{model}:generateContent, /v1/models/{model}:generateContent",
+		"Common endpoints:        /v1/models, /health, /healthz/memory",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("usage() missing %q\n%s", want, out)
+		}
 	}
 }
 

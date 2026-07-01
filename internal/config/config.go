@@ -50,6 +50,9 @@ type Config struct {
 
 func Parse(args []string) (Config, error) {
 	fs := flag.NewFlagSet("glm-compatible", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), usage())
+	}
 
 	var apiTokenCSV string
 	var modelCSV string
@@ -77,13 +80,13 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.GLMBaseURL, "glm-base-url", DefaultGLMBaseURL, "GLM upstream base URL")
 	fs.StringVar(&cfg.DefaultModel, "glm-model", DefaultModel, "default GLM model")
 	fs.StringVar(&modelCSV, "glm-models", "", "comma-separated model IDs exposed by /v1/models")
-	fs.Float64Var(&storeTTLSeconds, "store-ttl", 3600, "local store TTL in seconds; 0 means unlimited")
+	fs.Float64Var(&storeTTLSeconds, "store-ttl", 3600, "local store TTL in seconds after last access; 0 disables TTL")
 	fs.IntVar(&cfg.StoreMaxResponses, "store-max-responses", cfg.StoreMaxResponses, "maximum stored Responses; 0 means unlimited")
 	fs.IntVar(&cfg.StoreMaxChatCompletions, "store-max-chat-completions", cfg.StoreMaxChatCompletions, "maximum stored Chat Completions; 0 means unlimited")
 	fs.IntVar(&cfg.StoreMaxConversations, "store-max-conversations", cfg.StoreMaxConversations, "maximum stored Conversations; 0 means unlimited")
-	fs.Float64Var(&storePruneIntervalSeconds, "store-prune-interval", 60, "minimum seconds between local store prune checks on request paths")
+	fs.Float64Var(&storePruneIntervalSeconds, "store-prune-interval", 60, "minimum interval between request-path store prune checks in seconds")
 	fs.Float64Var(&timeoutSeconds, "glm-http-timeout", 120, "GLM HTTP timeout in seconds")
-	fs.Int64Var(&glmMaxResponseBodyBytes, "glm-max-response-body-bytes", cfg.GLMMaxResponseBodyBytes, "maximum upstream GLM non-stream/error response body bytes; 0 means unlimited")
+	fs.Int64Var(&glmMaxResponseBodyBytes, "glm-max-response-body-bytes", cfg.GLMMaxResponseBodyBytes, "maximum GLM upstream non-streaming or error response body size in bytes; 0 means unlimited")
 	fs.IntVar(&cfg.GLMMaxIdleConns, "glm-max-idle-conns", cfg.GLMMaxIdleConns, "maximum idle upstream HTTP connections")
 	fs.IntVar(&cfg.GLMMaxIdleConnsPerHost, "glm-max-idle-conns-per-host", cfg.GLMMaxIdleConnsPerHost, "maximum idle upstream HTTP connections per host")
 	fs.IntVar(&cfg.GLMMaxConnsPerHost, "glm-max-conns-per-host", 0, "maximum upstream HTTP connections per host; 0 means unlimited")
@@ -158,6 +161,73 @@ func Parse(args []string) (Config, error) {
 	cfg.ReadHeaderTimeout = time.Duration(readHeaderTimeoutSeconds * float64(time.Second))
 	cfg.IdleTimeout = time.Duration(idleTimeoutSeconds * float64(time.Second))
 	return cfg, nil
+}
+
+func usage() string {
+	return `Usage:
+  glm-compatible [flags]
+
+Example:
+  glm-compatible --listen :8080 --api-token sk-local-test --glm-api-key sk-your-glm-key
+
+Flags:
+  --api-token string
+      comma-separated local bearer token list
+  --debug-log-body
+      log redacted request/response bodies (default false)
+  --debug-pprof
+      enable authenticated /debug/pprof/ and /debug/vars endpoints (default false)
+  --glm-api-key string
+      GLM upstream API key
+  --glm-base-url string
+      GLM upstream base URL (default https://api.z.ai/api)
+  --glm-http-timeout float
+      GLM HTTP timeout in seconds (default 120)
+  --glm-max-conns-per-host int
+      maximum upstream HTTP connections per host; 0 means unlimited (default 0)
+  --glm-max-idle-conns int
+      maximum idle upstream HTTP connections (default 200)
+  --glm-max-idle-conns-per-host int
+      maximum idle upstream HTTP connections per host (default 100)
+  --glm-max-response-body-bytes int
+      maximum GLM upstream non-streaming or error response body size in bytes; 0 means unlimited (default 33554432)
+  --glm-model string
+      default GLM model (default glm-5.1)
+  --glm-models string
+      comma-separated model IDs exposed by /v1/models
+  --idle-timeout float
+      local HTTP idle timeout in seconds (default 120)
+  --listen string
+      HTTP listen address (default :8080)
+  --max-request-body-bytes int
+      maximum local request body size in bytes; 0 means unlimited (default 16777216)
+  --read-header-timeout float
+      local HTTP read header timeout in seconds (default 10)
+  --store-max-chat-completions int
+      maximum locally stored Chat Completions; 0 means unlimited (default 1000)
+  --store-max-conversations int
+      maximum locally stored Conversations; 0 means unlimited (default 1000)
+  --store-max-responses int
+      maximum locally stored Responses; 0 means unlimited (default 1000)
+  --store-prune-interval float
+      minimum interval between request-path store prune checks in seconds (default 60)
+  --store-ttl float
+      local store TTL in seconds after last access; 0 disables TTL (default 3600)
+  --verify-ssl
+      verify GLM upstream TLS certificates (default true)
+
+Container deployment:
+  docker-entrypoint.sh maps environment variables to the same flags. See docker.env.example.
+
+Compatible APIs:
+  GLM Chat Completions:    POST /paas/v4/chat/completions
+  OpenAI Chat Completions: /v1/chat/completions
+  OpenAI Responses:        /v1/responses
+  OpenAI Conversations:    /v1/conversations
+  Anthropic Messages:      /v1/messages
+  Gemini Generate Content: /v1beta/models/{model}:generateContent, /v1/models/{model}:generateContent
+  Common endpoints:        /v1/models, /health, /healthz/memory
+`
 }
 
 func splitCSV(value string) []string {
